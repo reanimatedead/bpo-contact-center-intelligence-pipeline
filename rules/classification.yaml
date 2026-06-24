@@ -1,0 +1,41 @@
+# Classification rules.
+# Keyword patterns can be used by analytics to assign a category to free-form
+# symptom_description text when symptom_category is missing.
+# Kept as configuration (not code) so reviewers can change rules without
+# touching the pipeline source.
+
+symptom_categories:
+  boot_failure:
+    keywords: ["power on", "boot", "won't start", "no power"]
+  display_issue:
+    keywords: ["screen", "display", "flicker", "blank screen"]
+  battery:
+    keywords: ["battery", "charge", "drain", "won't charge"]
+  overheat:
+    keywords: ["overheat", "hot", "heat", "thermal"]
+  noise:
+    keywords: ["noise", "buzz", "static", "abnormal sound"]
+  performance:
+    keywords: ["slow", "freeze", "crash", "hang"]
+  connectivity:
+    keywords: ["connection", "wifi", "bluetooth", "network"]
+  physical_damage:
+    keywords: ["crack", "bent", "broken casing", "physical"]
+  other:
+    keywords: []
+
+# Escalation thresholds.
+escalation_rules:
+  T3:
+    conditions:
+      - third_party: true
+      - warranty_status: "out_of_scope"
+      - symptom_category: ["physical_damage", "overheat"]
+      - resolution_time_gt: 90
+  T2:
+    conditions:
+      - symptom_category: ["boot_failure", "battery", "connectivity"]
+      - resolution_time_gt: 45
+  T1:
+    conditions:
+      - default: true
