@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  # CI-only dummy key for tests/E2E. This is NOT a production key; real
+  # deployments must provision their own secret BPO_PII_HMAC_KEY.
+  BPO_PII_HMAC_KEY: ci-only-test-key
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m pytest tests/ -v
+
+      - name: E2E pipeline run (clean data must exit 0)
+        run: |
+          make seed
+          python -m pipeline.run_pipeline
