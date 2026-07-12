@@ -1,5 +1,9 @@
 # BPO Contact Center Intelligence Pipeline
 
+[![CI](https://github.com/reanimatedead/bpo-contact-center-intelligence-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/reanimatedead/bpo-contact-center-intelligence-pipeline/actions/workflows/ci.yml)
+
+**A runnable, GRC-first contact-center ETL pipeline — for data/BI engineers and BPO analysts who need to see what "PII masking and quality controls *before* the warehouse" actually looks like in code, not in a slide.**
+
 > **This repository uses synthetic (dummy) data only.**
 > No real client data, no real cases, and no proprietary code from any production system
 > is included. Any resemblance to specific products, companies, or platforms is incidental.
@@ -9,27 +13,24 @@
 > 実案件のデータ・コード・固有名（クライアント・製品・店舗）は一切含みません。
 > 業界標準のETL構成を再現したポートフォリオ用の自作実装です。
 
-## What this is
+## How this differs from typical BPO / contact-center analytics demos
 
-An industry-standard ETL pipeline for contact-center analytics, built end-to-end with
-synthetic data so anyone can run it locally — no SaaS access, no audio models, no cloud
-warehouse credentials required.
+Most public contact-center analytics projects start at the dashboard and treat
+data governance as a footnote. This one inverts that:
 
-The point isn't the dataset. It's the **structure**:
-Extract → Transform → Load → Analytics, with PII pseudonymization and data quality
-checks deliberately placed *before* the load step. That ordering is the GRC observation
-embedded in the design.
-
-## Architecture
-
-```
-generate_data ─► extract ─► transform ─► load ─► analytics ─► dashboard
-                            (PII mask    (SQLite)            (HTML + CSV)
-                             + DQ checks)
-```
-
-See [`docs/architecture.md`](docs/architecture.md) for the rationale behind each layer
-(in particular, **why Transform comes before Load**).
+- **Controls are structural, not decorative.** PII pseudonymization and data-quality
+  checks run in the transform step, *before* anything touches storage. Raw PII never
+  reaches the warehouse.
+- **Quality checks are a gate, not a report.** Thresholds live in
+  [`rules/quality_gate.yaml`](rules/quality_gate.yaml); violations abort the pipeline
+  with a non-zero exit code (`2`) *before* the load step — so a scheduler or CI can
+  actually stop bad data, instead of filing a CSV nobody reads.
+- **Masking is keyed, and the key is mandatory.** PII is pseudonymized with
+  HMAC-SHA256 under `BPO_PII_HMAC_KEY`; the pipeline refuses to run without it.
+  There is no silent fallback to unkeyed hashing.
+- **Fully local and reproducible.** Synthetic data, SQLite, plain HTML output —
+  no SaaS access, no audio models, no cloud credentials. `make run` finishes in seconds,
+  and CI (pytest + an end-to-end run) enforces all of the above on every push.
 
 ## Quick start
 
@@ -50,6 +51,35 @@ Cleanup:
 ```bash
 make clean
 ```
+
+## Honest limitations
+
+- **The masking is pseudonymization, not anonymization.** Records stay linkable
+  by design (same key → same digest), which means the key holder — or anyone who
+  obtains the key — can re-identify customers by dictionary attack. Phone numbers
+  keep their last 4 digits and email domains stay in plaintext, both of which are
+  residual linkage risks. Full details in the
+  [PII masking threat model](#pii-masking-threat-model) below.
+- **All data is synthetic.** KPIs and distributions are illustrative; nothing here
+  is a benchmark for real contact-center operations.
+- **Single-node by design.** Pandas + SQLite demonstrate the control structure;
+  they are not a production-scale warehouse. The point is the *ordering* of the
+  controls, which transfers to any stack.
+- **Quality-gate defaults are zero-tolerance** (`max_violations: 0`), which suits
+  clean synthetic data. Real-world feeds need deliberately chosen thresholds.
+- **No speech/audio layer.** This is the post-transcription analytics stage; ASR
+  and audio ingestion are out of scope.
+
+## Architecture
+
+```
+generate_data ─► extract ─► transform ─► load ─► analytics ─► dashboard
+                            (PII mask    (SQLite)            (HTML + CSV)
+                             + DQ gate)
+```
+
+See [`docs/architecture.md`](docs/architecture.md) for the rationale behind each layer
+(in particular, **why Transform comes before Load**).
 
 ## Outputs
 
@@ -88,9 +118,10 @@ generalization instead of deterministic keyed hashing.
 | Choice | Reason |
 |---|---|
 | Transform *before* Load | PII pseudonymization and quality checks must occur **before** persistence. Storing raw PII first and masking later means raw PII has already touched storage — a GRC failure. The ordering is the control. |
+| Quality gate fails the run | A report that nobody has to act on is not a control. Exceeding a threshold in `rules/quality_gate.yaml` exits with code `2` before load, so orchestration halts. |
 | SQLite warehouse | Lightweight, file-based, no service to manage. Anyone can run it. |
 | Pandas + plain HTML output | No heavy SaaS, no plotly bundle, no model downloads. `make run` finishes in seconds. |
-| YAML rules in `rules/classification.yaml` | Classification logic lives as configuration, not code. Easier to review for compliance. |
+| YAML rules in `rules/` | Classification logic and gate thresholds live as configuration, not code. Easier to review for compliance. |
 | `pytest` focused on `transform` | The transform step is the GRC-critical layer; it gets the tests. |
 
 ## Tech stack
