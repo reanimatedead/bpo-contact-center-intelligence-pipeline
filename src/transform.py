@@ -29,9 +29,12 @@ class MissingPIIKeyError(RuntimeError):
 
 def _get_hmac_key() -> bytes:
     key = os.environ.get(PII_HMAC_KEY_ENV, "")
-    if not key:
+    # Reject unset, empty, and whitespace-only keys alike; a blank key offers
+    # no more protection than no key. The original (unstripped) value is used
+    # as the actual HMAC key.
+    if not key.strip():
         raise MissingPIIKeyError(
-            f"PII pseudonymization key is not set. Export {PII_HMAC_KEY_ENV} "
+            f"PII pseudonymization key is not set (or is blank). Export {PII_HMAC_KEY_ENV} "
             "(a long random secret, e.g. `openssl rand -hex 32`) before running "
             "the pipeline. Refusing to fall back to unkeyed hashing because it "
             "is reversible by dictionary attack."
