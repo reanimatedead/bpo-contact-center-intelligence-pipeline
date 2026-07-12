@@ -110,6 +110,27 @@ def test_quality_report_flags_qa_score_out_of_range():
     assert int(qa_row["violation_count"].iloc[0]) == 1
 
 
+def test_quality_report_nan_resolution_time_counts_missing_not_range():
+    raw = pd.DataFrame({
+        "customer_name":   ["A", "B"],
+        "customer_phone":  ["111-111-1111", "222-222-2222"],
+        "customer_email":  ["a@x.com", "b@x.com"],
+        "qa_score":        [3, 4],
+        "resolution_time": [float("nan"), 30],
+    })
+    masked = pseudonymize(raw)
+    report = quality_report(raw, masked)
+    missing_row = report[
+        (report["column"] == "resolution_time") & (report["check"] == "missing")
+    ]
+    range_row = report[
+        (report["column"] == "resolution_time")
+        & (report["check"].str.startswith("range"))
+    ]
+    assert int(missing_row["violation_count"].iloc[0]) == 1
+    assert int(range_row["violation_count"].iloc[0]) == 0
+
+
 def test_quality_report_flags_resolution_time_zero():
     raw = pd.DataFrame({
         "customer_name":   ["A"],

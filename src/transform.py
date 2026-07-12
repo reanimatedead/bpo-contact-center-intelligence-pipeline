@@ -87,7 +87,9 @@ def quality_report(df_raw: pd.DataFrame, df_masked: pd.DataFrame) -> pd.DataFram
 
     rt = df_raw.get("resolution_time")
     if rt is not None:
-        bad = int(((rt.fillna(-1)) < RESOLUTION_TIME_MIN).sum())
+        # NaN rows are already counted by the "missing" check above;
+        # the range check only applies to non-missing values.
+        bad = int((rt.dropna() < RESOLUTION_TIME_MIN).sum())
         rows.append({
             "column":          "resolution_time",
             "check":           f"range (>= {RESOLUTION_TIME_MIN})",
