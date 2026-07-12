@@ -27,3 +27,7 @@ output/*.csv
 # Secrets
 .env
 *.key
+
+# Env files (never commit real keys); keep the placeholder example tracked
+.env.*
+!.env.example

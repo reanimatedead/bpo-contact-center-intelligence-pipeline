@@ -17,9 +17,23 @@ surface at the boundary, not deep inside analytics.
 Two things happen here, and both happen **before** anything reaches the warehouse:
 
 1. **PII pseudonymization**
-   - `customer_name`  → SHA-256 hash (deterministic; first 12 hex chars retained)
+   - `customer_name`  → keyed HMAC-SHA256 (deterministic; first 12 hex chars retained)
    - `customer_phone` → preserve last 4 digits only: `***-***-9876`
-   - `customer_email` → hash the local part, preserve the domain: `a1b2c3@example.com`
+   - `customer_email` → HMAC the local part, preserve the domain: `a1b2c3@example.com`
+
+   The HMAC key is read from the `BPO_PII_HMAC_KEY` environment variable.
+   If it is unset or empty, the transform raises `MissingPIIKeyError` and the
+   pipeline stops — there is no silent fallback to unkeyed hashing.
+
+   **Threat model — this is pseudonymization, not anonymization.**
+   Under a given key, identical inputs map to identical outputs, which keeps
+   records linkable across cases (useful for repeat-contact analysis). The
+   trade-off: if the key leaks, low-entropy fields (names, common email local
+   parts) can be recovered by dictionary attack — hash candidates under the
+   leaked key and match. Residual risks that remain even with a secret key:
+   the phone's plaintext last-4 digits and the email's plaintext domain are
+   both linkable to external datasets. Treat the key as a rotating secret and
+   never commit it to the repository.
 
 2. **Data quality checks**
    - missing values per column

@@ -1,11 +1,18 @@
 """Transform layer: PII pseudonymization + data quality checks.
 
 This layer runs BEFORE the load step. Raw PII never reaches the warehouse.
+
+Pseudonymization uses keyed HMAC-SHA256. The key MUST be provided via the
+``BPO_PII_HMAC_KEY`` environment variable; there is no fallback. An unkeyed
+hash of low-entropy inputs (names, email local parts) is trivially reversible
+by dictionary attack, so running without a key is treated as a hard error.
 """
 
 from __future__ import annotations
 
 import hashlib
+import hmac
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -13,15 +20,33 @@ import pandas as pd
 QA_SCORE_RANGE = (1, 5)
 RESOLUTION_TIME_MIN = 1
 
+PII_HMAC_KEY_ENV = "BPO_PII_HMAC_KEY"
 
-def _sha256_short(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+class MissingPIIKeyError(RuntimeError):
+    """Raised when the PII pseudonymization key is not configured."""
+
+
+def _get_hmac_key() -> bytes:
+    key = os.environ.get(PII_HMAC_KEY_ENV, "")
+    if not key:
+        raise MissingPIIKeyError(
+            f"PII pseudonymization key is not set. Export {PII_HMAC_KEY_ENV} "
+            "(a long random secret, e.g. `openssl rand -hex 32`) before running "
+            "the pipeline. Refusing to fall back to unkeyed hashing because it "
+            "is reversible by dictionary attack."
+        )
+    return key.encode("utf-8")
+
+
+def _hmac_short(value: str) -> str:
+    return hmac.new(_get_hmac_key(), value.encode("utf-8"), hashlib.sha256).hexdigest()[:12]
 
 
 def mask_name(name) -> str:
     if not isinstance(name, str) or not name:
         return ""
-    return _sha256_short(name)
+    return _hmac_short(name)
 
 
 def mask_phone(phone) -> str:
@@ -37,7 +62,7 @@ def mask_email(email) -> str:
     if not isinstance(email, str) or "@" not in email:
         return ""
     local, domain = email.split("@", 1)
-    return f"{_sha256_short(local)}@{domain}"
+    return f"{_hmac_short(local)}@{domain}"
 
 
 def pseudonymize(df: pd.DataFrame) -> pd.DataFrame:
