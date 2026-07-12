@@ -35,6 +35,12 @@ def test_mask_raises_on_empty_key(monkeypatch):
         mask_name("Alice")
 
 
+def test_mask_raises_on_whitespace_only_key(monkeypatch):
+    monkeypatch.setenv(PII_HMAC_KEY_ENV, "   \t")
+    with pytest.raises(MissingPIIKeyError):
+        mask_name("Alice")
+
+
 def test_mask_is_deterministic_under_same_key(monkeypatch):
     monkeypatch.setenv(PII_HMAC_KEY_ENV, "key-one")
     first = mask_name("Alice")
