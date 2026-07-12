@@ -1,0 +1,28 @@
+# Quality gate thresholds.
+#
+# The pipeline evaluates output/quality_report.csv against these limits and
+# exits non-zero when any limit is exceeded. Kept as configuration (not code)
+# so reviewers can loosen/tighten the gate without touching pipeline source.
+#
+# Each entry under `checks` matches quality_report rows whose `check` value
+# starts with the given key ("range" matches "range (>= 1)" and
+# "range [1, 5]"). `max_violations` is the maximum tolerated violation_count
+# per matching row. Checks without an entry fall back to
+# `default_max_violations`.
+
+default_max_violations: 0
+
+checks:
+  # Missing values per column. Synthetic data is fully populated, so any
+  # missing value indicates an upstream defect.
+  missing:
+    max_violations: 0
+
+  # Range violations (resolution_time >= 1, qa_score in [1, 5]).
+  range:
+    max_violations: 0
+
+  # Masking distinct-count rows are informational (violation_count is always
+  # reported as 0), but keep the gate at 0 so a future regression fails loudly.
+  masking:
+    max_violations: 0

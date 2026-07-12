@@ -119,10 +119,15 @@ def quality_report(df_raw: pd.DataFrame, df_masked: pd.DataFrame) -> pd.DataFram
     return pd.DataFrame(rows)
 
 
-def transform(df: pd.DataFrame, report_path: Path) -> pd.DataFrame:
+def transform(df: pd.DataFrame, report_path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Pseudonymize and quality-check the raw frame.
+
+    Returns ``(masked, report)`` so the caller can evaluate the quality gate
+    against the report instead of only writing it to CSV.
+    """
     masked = pseudonymize(df)
     report = quality_report(df, masked)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report.to_csv(report_path, index=False)
     print(f"[transform] pseudonymized {len(masked)} rows; quality report -> {report_path}")
-    return masked
+    return masked, report
