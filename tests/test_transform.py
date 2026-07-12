@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from src.transform import (
+    PII_HMAC_KEY_ENV,
+    MissingPIIKeyError,
     mask_email,
     mask_name,
     mask_phone,
@@ -16,6 +19,37 @@ from src.transform import (
 def test_mask_name_is_deterministic():
     assert mask_name("Alice") == mask_name("Alice")
     assert mask_name("Alice") != mask_name("Bob")
+
+
+def test_mask_raises_without_key(monkeypatch):
+    monkeypatch.delenv(PII_HMAC_KEY_ENV, raising=False)
+    with pytest.raises(MissingPIIKeyError):
+        mask_name("Alice")
+    with pytest.raises(MissingPIIKeyError):
+        mask_email("alice@example.com")
+
+
+def test_mask_raises_on_empty_key(monkeypatch):
+    monkeypatch.setenv(PII_HMAC_KEY_ENV, "")
+    with pytest.raises(MissingPIIKeyError):
+        mask_name("Alice")
+
+
+def test_mask_is_deterministic_under_same_key(monkeypatch):
+    monkeypatch.setenv(PII_HMAC_KEY_ENV, "key-one")
+    first = mask_name("Alice")
+    second = mask_name("Alice")
+    assert first == second
+    assert mask_email("alice@example.com") == mask_email("alice@example.com")
+
+
+def test_mask_output_changes_with_key(monkeypatch):
+    monkeypatch.setenv(PII_HMAC_KEY_ENV, "key-one")
+    with_key_one = mask_name("Alice")
+    email_key_one = mask_email("alice@example.com")
+    monkeypatch.setenv(PII_HMAC_KEY_ENV, "key-two")
+    assert mask_name("Alice") != with_key_one
+    assert mask_email("alice@example.com") != email_key_one
 
 
 def test_mask_name_handles_empty():
