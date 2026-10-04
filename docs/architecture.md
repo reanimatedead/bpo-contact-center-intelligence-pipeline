@@ -1,102 +1,110 @@
-# Architecture
+# 現行ローカル実装の設計
 
-This pipeline follows a standard **Extract → Transform → Load → Analytics** flow,
-orchestrated by a single linear runner. The structure is deliberately conservative
-and follows mainstream industry practice.
+この資料は現在のコードを説明します。[2024年12月の再編構造](reorganization-2024-12.md)は想定図に基づく参照資料であり、
+現在のPythonコードを2024年当時の本番実装として示すものではありません。
+実行手順と出力先の一覧は[README](../README.md)を参照してください。
 
-## Layer responsibilities
+## 入力と処理順序
 
-### 1. Extract (`src/extract.py`)
+1. `src/generate_data.py`を別途実行し、合成ケースをCSVへ保存する。既定200件、seed 42、日付の基準は2026-06-24で、0〜180日前を生成する。これは本番の日付・件数ではない。依存ライブラリのバージョンは固定されていないため、異なる環境間の完全一致は保証しない。
+2. `src/extract.py`がCSVを読み、`contact_date`を日付として読み込む指定と必須列の存在確認を行う。
+3. `src/transform.py`がDataFrameをコピーして3列を仮名化し、元データの品質チェックと変換前後のユニーク数をCSVへ保存する。
+4. `src/quality_gate.py`がYAMLを読み、メモリ上の品質レポートを評価する。違反があればrunnerがここで停止する。
+5. `src/load.py`がSQLiteへ置換保存する。
+6. `src/analytics.py`が保存済み`cases`を読み直して集計する。
+7. `src/dashboard.py`が4つの表をHTMLとCSVへ書き出す。
 
-Pulls raw case data from CSV files in `data/synthetic/`. The extractor validates
-the input schema (required columns) and rejects malformed input loudly so failures
-surface at the boundary, not deep inside analytics.
+runnerは`pipeline/run_pipeline.py`。パスは作業ディレクトリからの相対パスで、CLIのパス変更オプションはない。
+Pythonの`main()`引数では入出力・品質設定のパスを指定できる。スケジューラ、再試行、並列実行制御はない。
 
-### 2. Transform (`src/transform.py`) — the GRC layer
+必須14列は次のとおり。追加列は禁止されず、そのまま後続へ渡る。
 
-Two things happen here, and both happen **before** anything reaches the warehouse:
+```text
+case_id, contact_date, customer_name, customer_phone, customer_email,
+symptom_category, symptom_description, purchase_source, warranty_status,
+third_party, resolution_time, qa_score, escalation_level, agent_id
+```
 
-1. **PII pseudonymization**
-   - `customer_name`  → keyed HMAC-SHA256 (deterministic; first 12 hex chars retained)
-   - `customer_phone` → preserve last 4 digits only: `***-***-9876`
-   - `customer_email` → HMAC the local part, preserve the domain: `a1b2c3@example.com`
+入力はケース1行を意図した合成データだが、`case_id`の一意性は検証しない。
+`qa_score`はケースに付与した1〜5の生成値で、独立したQAレビューや設問回答テーブルではない。
+`agent_id`に対応する人員マスタもない。
 
-   The HMAC key is read from the `BPO_PII_HMAC_KEY` environment variable.
-   If it is unset or empty, the transform raises `MissingPIIKeyError` and the
-   pipeline stops — there is no silent fallback to unkeyed hashing.
+## 品質チェックと停止条件
 
-   **Threat model — this is pseudonymization, not anonymization.**
-   Under a given key, identical inputs map to identical outputs, which keeps
-   records linkable across cases (useful for repeat-contact analysis). The
-   trade-off: if the key leaks, low-entropy fields (names, common email local
-   parts) can be recovered by dictionary attack — hash candidates under the
-   leaked key and match. Residual risks that remain even with a secret key:
-   the phone's plaintext last-4 digits and the email's plaintext domain are
-   both linkable to external datasets. Treat the key as a rotating secret and
-   never commit it to the repository.
+| チェック | 実装の内容 |
+|---|---|
+| 必須列 | Extractで列不足を例外にする。型・値域の包括的なスキーマ検証ではない |
+| `missing` | 元データの全列について`isna()`の件数を記録 |
+| `range (>= 1)` | `resolution_time`の非欠損値が1未満なら違反。欠損はmissingで扱う |
+| `range [1, 5]` | `qa_score`が1未満または5超なら違反 |
+| `masking distinct (raw -> masked)` | 氏名・電話・メールの変換前後のユニーク数。違反件数は常に0で、衝突判定ではない |
 
-2. **Data quality checks**
-   - missing values per column
-   - range violations (`resolution_time >= 1`, `qa_score ∈ [1, 5]`)
-   - masking distinct counts (raw → masked) per PII column
+レポートの列は`column`、`check`、`violation_count`、`total`。
+通常の`total`は入力行数だが、仮名化の行では「変換前 -> 変換後」のユニーク数を文字列で格納する。
+欠損率や型違反を出力する仕組みはない。数値比較できない値は例外になり得る。
 
-All findings land in `output/quality_report.csv`.
+[`rules/quality_gate.yaml`](../rules/quality_gate.yaml)はチェック名の前方一致で許容件数を選ぶ。
+既定値とmissing/range/maskingの許容件数はいずれも0。**各レポート行の違反件数が許容件数を超えたとき**に失敗する。
+欠損補完、異常値修正、重複排除は行わない。日付妥当性、カテゴリの列挙値、外部キー、主キー一意性、
+自由記述の個人情報検出、SLA監視・通知も未実装。
+分類設定[`rules/classification.yaml`](../rules/classification.yaml)を読む処理はない。
 
-**Why does this layer come before Load?**
-Because raw PII should never persist in the warehouse, even briefly. Masking after
-load means raw PII has already touched storage — and depending on the storage
-medium, may sit in backups, replicas, or transaction logs. Masking before load
-makes the warehouse incapable of leaking raw PII because it never had any.
+## 仮名化の範囲
 
-### 3. Load (`src/load.py`)
+- 氏名：HMAC-SHA256の先頭12桁の16進文字列。
+- メール：ローカル部を同じ方式で置換し、ドメインは保持。
+- 電話：数字を抽出し末尾4桁だけ保持。4桁未満は`***-***-****`。
 
-Writes the cleaned, pseudonymized DataFrame to a local SQLite warehouse at
-`data/warehouse.db`. Idempotent: re-running the pipeline replaces the `cases`
-table rather than appending.
+HMACに使う必須環境変数は`BPO_PII_HMAC_KEY`。未設定・空・空白だけの場合、有効な文字列のハッシュ処理で
+`MissingPIIKeyError`になる。起動直後の無条件検証ではない。`.env`の自動読み込みはない。
+不正・空の氏名やメールは空文字へ変換される場合があるが、品質の欠損検査対象は変換前のデータなので、
+変換後の空文字をすべて検出するわけではない。
 
-### 4. Analytics (`src/analytics.py`)
+同じ値と同じキーは同じ結果になり、レコード間の関連付けが可能な仮名化である。匿名化を保証しない。
+キーを知る者による候補値との照合、短縮値の衝突、電話末尾・メールドメインからの関連付けが残る。
+自由記述、`agent_id`、追加列はそのまま保存される。したがって「全個人情報が保存前に除去される」とは言えない。
+この再現コードは合成データ用で、仮名化前の合成CSVはディスクに残る。
 
-Computes a small set of standard contact-center KPIs from the warehouse:
+## 保存方式と終了コード
 
-- total case count
-- AHT (average handling time, minutes)
-- escalation rate (% T2 + T3)
-- SLA hit rate (% resolved under the SLA target)
-- average QA score
-- case count by symptom category
-- case count by purchase source
-- weekly case-count trend
+`DataFrame.to_sql(..., if_exists="replace", index=False)`で`data/warehouse.db`の`cases`を置換する。
+追記・差分更新・履歴管理・dim/fact/aggテーブル・明示的な主キー制約はない。
+図のrawレイクを実装したものではない。
 
-### 5. Dashboard (`src/dashboard.py`)
+| Python runnerの終了コード | 条件と成果物への影響 |
+|---|---|
+| 0 | 全処理が完了 |
+| 1 | 処理例外。失敗ステップ名とtracebackを標準エラー出力へ記録 |
+| 2 | 品質ゲート違反。品質CSVは出力済みで、今回のLoad・分析・表示は行わない |
 
-Renders the KPI tables as `output/dashboard.html` (a plain HTML table — no plotly
-bundle) and exports the same data as `output/kpi_summary.csv` for downstream tools.
+全工程を一括でロールバックする仕組みはない。品質ゲート違反でも以前のDB・HTML・KPI CSVは残る。
+保存後の分析や表示で失敗した場合は、DBだけ更新される等の状態になり得る。成果物の存在だけで今回の成功を判定しない。
+`make run`経由の終了コードはmake側の扱いになるため、0/1/2の区別にはPython runnerを直接実行する。
 
-### 6. Orchestration (`pipeline/run_pipeline.py`)
+## 分析と表示
 
-A single linear runner. Each step is named; on failure, the runner prints which
-named step failed before re-raising. No DAG library is used — for a five-step
-pipeline, that would be overkill.
+`src/analytics.py`は以下の4表を返す。
 
-## Why this order matters
+| 表 | 内容 |
+|---|---|
+| `summary` | 全行数、`resolution_time`平均、T2/T3の割合、`resolution_time <= 60`の割合、QA平均。平均・割合は小数第2位に丸める |
+| `by_category` | `symptom_category`別件数、件数降順 |
+| `by_source` | `purchase_source`別件数、件数降順 |
+| `weekly` | `contact_date`を`to_period("W")`で月曜〜日曜の週にまとめた件数、週順 |
 
-In many tutorials you'll see **E → L → T**: load raw data, then transform. That
-works for low-stakes analytics but is a poor fit when the data contains PII or
-payment-relevant fields. **Transform-before-Load** means the warehouse never sees
-raw identifiers.
+AHTという出力名は`resolution_time`の平均を指し、通話・保留・後処理時間から算出する本番AHTとは区別する。
+60分というSLA閾値もコード内の例示で、本番の契約条件ではない。QAの設問別配点・CSAT・FCRは扱わない。
 
-This is the same reason production-grade contact-center stacks separate "ingest
-landing zones" from analytical warehouses — except here we make the same point
-with a single in-memory DataFrame, which keeps the example small enough for one
-person to read in fifteen minutes.
+HTMLは4表を表示する静的ページで、対話型ダッシュボードではない。
+CSVは`# summary`、`# by_category`、`# by_source`、`# weekly`の見出しと空行で区切った複数表。
+通常の単一表CSVとして一括読み込みする形式ではない。
 
-## What is intentionally NOT here
+## 検証範囲と制約
 
-- **No DAG framework.** Airflow / Prefect / Dagster all make sense at scale, but
-  for a five-step pipeline they add operational surface without analytical value.
-- **No speech-to-text model.** Audio transcription is a real concern in contact
-  centers, but bundling Whisper (or any other model) would push the install over
-  a gigabyte and make "anyone can run it" untrue.
-- **No cloud warehouse.** BigQuery / Snowflake / Redshift would all work — but
-  they make the example impossible to run without an account. SQLite gives the
-  same ETL shape with zero setup.
+既存テストは仮名化、必須環境変数が無効な場合、欠損・範囲違反、品質ゲートの判定、
+runnerの正常終了・品質違反時の保存スキップを確認する。既存CIはPython 3.11でテストと合成データの通し実行を行う。
+これはクラウド接続や図全体の動作検証ではない。
+
+Pandasで全データをメモリに載せ、SQLiteへ単一テーブルとして保存するローカル実装である。
+複数ソースの統合、スケール検証、権限管理、raw履歴、クラウド監視、施策の実行は未実装。
+図と現行コードの対応、図から確認できない仕様、粒度・結合の設計補足は[再編構造の資料](reorganization-2024-12.md)に分けて記載する。
